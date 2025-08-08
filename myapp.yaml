@@ -1,0 +1,9 @@
+apiVersion: urmi.dev/v1alpha1
+kind: MyApp
+metadata:
+  name: my-book-project
+  namespace: default
+spec:
+  replicas: 2
+  auth: true
+  image: urmibiswas/book_project:v3
