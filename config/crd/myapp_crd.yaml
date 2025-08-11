@@ -29,6 +29,8 @@ spec:
                    type: string
                  auth:
                    type: boolean
+                 jwtSecret:
+                  type: string
              status:
                type: object
                properties:

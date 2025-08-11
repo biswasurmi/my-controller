@@ -16,7 +16,7 @@ spec:
       serviceAccountName: myapp-controller
       containers:
         - name: my-controller
-          image: urmibiswas/my-controller:v3
+          image: urmibiswas/my-controller:v4  
           imagePullPolicy: Always
           env:
             - name: POD_NAMESPACE

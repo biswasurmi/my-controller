@@ -7,3 +7,4 @@ spec:
   replicas: 2
   auth: true
   image: urmibiswas/book_project:v3
+  jwtSecret: bolaJabeNah

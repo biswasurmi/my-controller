@@ -16,6 +16,7 @@ type MyAppSpec struct {
 	Image    string `json:"image"`
 	Replicas *int32 `json:"replicas,omitempty"`
 	Auth     *bool  `json:"auth,omitempty"`
+	JWTSecret string `json:"jwtSecret"`
 }
 
 type MyAppStatus struct {

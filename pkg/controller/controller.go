@@ -173,103 +173,141 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 }
 
 func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName) error {
-    logger := klog.LoggerWithValues(klog.FromContext(ctx), "objectRef", objectRef)
+	logger := klog.LoggerWithValues(klog.FromContext(ctx), "objectRef", objectRef)
 
-    logger.Info("Starting sync for MyApp", "namespace", objectRef.Namespace, "name", objectRef.Name)
+	logger.Info("Starting sync for MyApp", "namespace", objectRef.Namespace, "name", objectRef.Name)
 
-    myapp, err := c.myappsLister.MyApps(objectRef.Namespace).Get(objectRef.Name)
-    if err != nil {
-        if kerrors.IsNotFound(err) {
-            logger.Info("MyApp not found, skipping", "objectReference", objectRef)
-            return nil
-        }
-        logger.Error(err, "Failed to get MyApp")
-        return err
-    }
+	myapp, err := c.myappsLister.MyApps(objectRef.Namespace).Get(objectRef.Name)
+	if err != nil {
+		if kerrors.IsNotFound(err) {
+			logger.Info("MyApp not found, skipping", "objectReference", objectRef)
+			return nil
+		}
+		logger.Error(err, "Failed to get MyApp")
+		return err
+	}
 
-    logger.Info("Processing MyApp", "namespace", objectRef.Namespace, "name", objectRef.Name)
+	logger.Info("MyApp JWT Secret", "jwtSecret", myapp.Spec.JWTSecret)
 
-    deploymentName := objectRef.Name + "-deployment"
-    deployment, err := c.deploymentsLister.Deployments(objectRef.Namespace).Get(deploymentName)
-    desiredDeployment := newDeployment(myapp)
+	logger.Info("Processing MyApp", "namespace", objectRef.Namespace, "name", objectRef.Name)
 
-    if kerrors.IsNotFound(err) {
-        logger.Info("Deployment not found, creating", "deployment", deploymentName)
-        deployment, err = c.kubeclientset.AppsV1().Deployments(objectRef.Namespace).Create(ctx, desiredDeployment, metav1.CreateOptions{})
-        if err != nil {
-            logger.Error(err, "Failed to create Deployment", "deployment", deploymentName)
-            return err
-        }
-        logger.Info("Created Deployment", "deployment", deploymentName)
-    } else if err != nil {
-        logger.Error(err, "Failed to get Deployment", "deployment", deploymentName)
-        return err
-    } else {
-        updateNeeded := false
-        deploymentCopy := deployment.DeepCopy()
+	deploymentName := objectRef.Name + "-deployment"
+	deployment, err := c.deploymentsLister.Deployments(objectRef.Namespace).Get(deploymentName)
+	desiredDeployment := newDeployment(myapp)
 
-        if myapp.Spec.Replicas != nil {
-            if deploymentCopy.Spec.Replicas == nil || *deploymentCopy.Spec.Replicas != *myapp.Spec.Replicas {
-                logger.Info("Updating Deployment replicas", "deployment", deploymentName, "desiredReplicas", *myapp.Spec.Replicas)
-                deploymentCopy.Spec.Replicas = myapp.Spec.Replicas
-                updateNeeded = true
-            }
-        }
+	logger.Info("Desired deployment container env vars", "env", desiredDeployment.Spec.Template.Spec.Containers[0].Env)
 
-        origContainer := deploymentCopy.Spec.Template.Spec.Containers[0]
-        desiredContainer := desiredDeployment.Spec.Template.Spec.Containers[0]
+	if kerrors.IsNotFound(err) {
+		logger.Info("Deployment not found, creating", "deployment", deploymentName)
+		deployment, err = c.kubeclientset.AppsV1().Deployments(objectRef.Namespace).Create(ctx, desiredDeployment, metav1.CreateOptions{})
+		if err != nil {
+			logger.Error(err, "Failed to create Deployment", "deployment", deploymentName)
+			return err
+		}
+		logger.Info("Created Deployment", "deployment", deploymentName)
+	} else if err != nil {
+		logger.Error(err, "Failed to get Deployment", "deployment", deploymentName)
+		return err
+	} else {
+		updateNeeded := false
+		deploymentCopy := deployment.DeepCopy()
 
-        if origContainer.Image != desiredContainer.Image {
-            logger.Info("Updating Deployment container image", "deployment", deploymentName, "oldImage", origContainer.Image, "newImage", desiredContainer.Image)
-            deploymentCopy.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
-            updateNeeded = true
-        }
+		if myapp.Spec.Replicas != nil {
+			if deploymentCopy.Spec.Replicas == nil || *deploymentCopy.Spec.Replicas != *myapp.Spec.Replicas {
+				logger.Info("Updating Deployment replicas", "deployment", deploymentName, "desiredReplicas", *myapp.Spec.Replicas)
+				deploymentCopy.Spec.Replicas = myapp.Spec.Replicas
+				updateNeeded = true
+			}
+		}
 
-        if !equalStringSlices(origContainer.Command, desiredContainer.Command) {
-            logger.Info("Updating Deployment container command", "deployment", deploymentName)
-            deploymentCopy.Spec.Template.Spec.Containers[0].Command = desiredContainer.Command
-            updateNeeded = true
-        }
+		origContainer := deploymentCopy.Spec.Template.Spec.Containers[0]
+		desiredContainer := desiredDeployment.Spec.Template.Spec.Containers[0]
 
-        if !equalStringSlices(origContainer.Args, desiredContainer.Args) {
-            logger.Info("Updating Deployment container args", "deployment", deploymentName)
-            deploymentCopy.Spec.Template.Spec.Containers[0].Args = desiredContainer.Args
-            updateNeeded = true
-        }
+		if origContainer.Image != desiredContainer.Image {
+			logger.Info("Updating Deployment container image", "deployment", deploymentName, "oldImage", origContainer.Image, "newImage", desiredContainer.Image)
+			deploymentCopy.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
+			updateNeeded = true
+		}
 
-        if updateNeeded {
-            deployment, err = c.kubeclientset.AppsV1().Deployments(objectRef.Namespace).Update(ctx, deploymentCopy, metav1.UpdateOptions{})
-            if err != nil {
-                logger.Error(err, "Failed to update Deployment", "deployment", deploymentName)
-                return err
-            }
-            logger.Info("Updated Deployment", "deployment", deploymentName)
-        }
-    }
+		if !equalStringSlices(origContainer.Command, desiredContainer.Command) {
+			logger.Info("Updating Deployment container command", "deployment", deploymentName)
+			deploymentCopy.Spec.Template.Spec.Containers[0].Command = desiredContainer.Command
+			updateNeeded = true
+		}
 
-    // Attempt status update with retries
-    for i := 0; i < 3; i++ {
-        myapp, err = c.myappclientset.UrmiV1alpha1().MyApps(objectRef.Namespace).Get(ctx, objectRef.Name, metav1.GetOptions{})
-        if err != nil {
-            logger.Error(err, "Failed to refresh MyApp before status update", "attempt", i+1)
-            time.Sleep(500 * time.Millisecond)
-            continue
-        }
-        if err := c.updateMyAppStatus(ctx, myapp, deployment); err != nil {
-            logger.Error(err, "Failed to update MyApp status", "attempt", i+1)
-            time.Sleep(500 * time.Millisecond)
-            continue
-        }
-        break
-    }
-    if err != nil {
-        logger.Error(err, "Failed to update MyApp status after retries, proceeding to avoid infinite loop")
-        // Do not return error to avoid requeuing
-    }
+		if !equalStringSlices(origContainer.Args, desiredContainer.Args) {
+			logger.Info("Updating Deployment container args", "deployment", deploymentName)
+			deploymentCopy.Spec.Template.Spec.Containers[0].Args = desiredContainer.Args
+			updateNeeded = true
+		}
 
-    c.recorder.Event(myapp, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
-    logger.Info("Successfully synced MyApp", "objectName", objectRef)
-    return nil
+		origEnv := deploymentCopy.Spec.Template.Spec.Containers[0].Env
+		desiredEnv := desiredDeployment.Spec.Template.Spec.Containers[0].Env
+
+		if !equalEnvVars(origEnv, desiredEnv) {
+			logger.Info("Updating Deployment container env vars", "deployment", deploymentName, "origEnv", origEnv, "desiredEnv", desiredEnv)
+			deploymentCopy.Spec.Template.Spec.Containers[0].Env = desiredEnv
+			updateNeeded = true
+		}
+
+		if updateNeeded {
+			logger.Info("Applying deployment update", "deployment", deploymentName)
+			deployment, err = c.kubeclientset.AppsV1().Deployments(objectRef.Namespace).Update(ctx, deploymentCopy, metav1.UpdateOptions{})
+			if err != nil {
+				logger.Error(err, "Failed to update Deployment", "deployment", deploymentName)
+				return err
+			}
+			logger.Info("Updated Deployment", "deployment", deploymentName)
+		}
+		logger.Info("Existing deployment container env vars", "env", deployment.Spec.Template.Spec.Containers[0].Env)
+	}
+
+	// Attempt status update with retries
+	for i := 0; i < 3; i++ {
+		myapp, err = c.myappclientset.UrmiV1alpha1().MyApps(objectRef.Namespace).Get(ctx, objectRef.Name, metav1.GetOptions{})
+		if err != nil {
+			logger.Error(err, "Failed to refresh MyApp before status update", "attempt", i+1)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		if err := c.updateMyAppStatus(ctx, myapp, deployment); err != nil {
+			logger.Error(err, "Failed to update MyApp status", "attempt", i+1)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		break
+	}
+	if err != nil {
+		logger.Error(err, "Failed to update MyApp status after retries, proceeding to avoid infinite loop")
+		// Do not return error to avoid requeuing
+	}
+
+	c.recorder.Event(myapp, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
+	logger.Info("Successfully synced MyApp", "objectName", objectRef)
+	return nil
+}
+
+func equalEnvVars(a, b []corev1.EnvVar) bool {
+	if len(a) != len(b) {
+		klog.InfoS("Env length differs", "lenA", len(a), "lenB", len(b))
+		return false
+	}
+	envMapA := make(map[string]string)
+	envMapB := make(map[string]string)
+	for _, env := range a {
+		envMapA[env.Name] = env.Value
+	}
+	for _, env := range b {
+		envMapB[env.Name] = env.Value
+	}
+	for name, valueA := range envMapA {
+		valueB, exists := envMapB[name]
+		if !exists || valueA != valueB {
+			klog.InfoS("Env var differs for key", "name", name, "valueA", valueA, "valueB", valueB)
+			return false
+		}
+	}
+	return true
 }
 
 func equalStringSlices(a, b []string) bool {
@@ -284,34 +322,33 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
-
 func (c *Controller) updateMyAppStatus(ctx context.Context, myapp *v1alpha1.MyApp, deployment *appsv1.Deployment) error {
-    logger := klog.FromContext(ctx)
+	logger := klog.FromContext(ctx)
 
-    // Fetch the latest MyApp resource directly from the API server
-    latestMyApp, err := c.myappclientset.UrmiV1alpha1().MyApps(myapp.Namespace).Get(ctx, myapp.Name, metav1.GetOptions{})
-    if err != nil {
-        logger.Error(err, "Failed to fetch latest MyApp for status update", "namespace", myapp.Namespace, "name", myapp.Name)
-        return err
-    }
+	// Fetch the latest MyApp resource directly from the API server
+	latestMyApp, err := c.myappclientset.UrmiV1alpha1().MyApps(myapp.Namespace).Get(ctx, myapp.Name, metav1.GetOptions{})
+	if err != nil {
+		logger.Error(err, "Failed to fetch latest MyApp for status update", "namespace", myapp.Namespace, "name", myapp.Name)
+		return err
+	}
 
-    // Create a copy of the latest MyApp for status update
-    myappCopy := latestMyApp.DeepCopy()
-    if deployment != nil {
-        myappCopy.Status.AvailableReplicas = deployment.Status.AvailableReplicas
-    } else {
-        myappCopy.Status.AvailableReplicas = 0
-    }
+	// Create a copy of the latest MyApp for status update
+	myappCopy := latestMyApp.DeepCopy()
+	if deployment != nil {
+		myappCopy.Status.AvailableReplicas = deployment.Status.AvailableReplicas
+	} else {
+		myappCopy.Status.AvailableReplicas = 0
+	}
 
-    // Update the status
-    updatedMyApp, err := c.myappclientset.UrmiV1alpha1().MyApps(myappCopy.Namespace).UpdateStatus(ctx, myappCopy, metav1.UpdateOptions{})
-    if err != nil {
-        logger.Error(err, "Failed to update MyApp status", "namespace", myappCopy.Namespace, "name", myappCopy.Name)
-        return err
-    }
+	// Update the status
+	updatedMyApp, err := c.myappclientset.UrmiV1alpha1().MyApps(myappCopy.Namespace).UpdateStatus(ctx, myappCopy, metav1.UpdateOptions{})
+	if err != nil {
+		logger.Error(err, "Failed to update MyApp status", "namespace", myappCopy.Namespace, "name", myappCopy.Name)
+		return err
+	}
 
-    logger.Info("Successfully updated MyApp status", "namespace", updatedMyApp.Namespace, "name", updatedMyApp.Name, "availableReplicas", updatedMyApp.Status.AvailableReplicas)
-    return nil
+	logger.Info("Successfully updated MyApp status", "namespace", updatedMyApp.Namespace, "name", updatedMyApp.Name, "availableReplicas", updatedMyApp.Status.AvailableReplicas)
+	return nil
 }
 
 func (c *Controller) enqueueMyApp(obj interface{}) {
@@ -357,60 +394,70 @@ func (c *Controller) handleObject(obj interface{}) {
 }
 
 func newDeployment(myapp *v1alpha1.MyApp) *appsv1.Deployment {
-    labels := map[string]string{
-        "app": myapp.Name,
-    }
+	labels := map[string]string{
+		"app": myapp.Name,
+	}
 
-    var replicas *int32
-    if myapp.Spec.Replicas != nil {
-        replicas = myapp.Spec.Replicas
-    }
+	var replicas *int32
+	if myapp.Spec.Replicas != nil {
+		replicas = myapp.Spec.Replicas
+	}
 
-    authArg := "--auth=false"
-    if myapp.Spec.Auth != nil && *myapp.Spec.Auth {
-        authArg = "--auth=true"
-    }
+	authArg := "--auth=false"
+	if myapp.Spec.Auth != nil && *myapp.Spec.Auth {
+		authArg = "--auth=true"
+	}
 
-    image := "urmibiswas/book_project:v3"
-    if myapp.Spec.Image != "" {
-        image = myapp.Spec.Image
-    }
+	image := "urmibiswas/book_project:v3"
+	if myapp.Spec.Image != "" {
+		image = myapp.Spec.Image
+	}
 
-    return &appsv1.Deployment{
-        ObjectMeta: metav1.ObjectMeta{
-            Name:      myapp.Name + "-deployment",
-            Namespace: myapp.Namespace,
-            OwnerReferences: []metav1.OwnerReference{
-                *metav1.NewControllerRef(myapp, v1alpha1.SchemeGroupVersion.WithKind("MyApp")),
-            },
-        },
-        Spec: appsv1.DeploymentSpec{
-            Replicas: replicas,
-            Selector: &metav1.LabelSelector{
-                MatchLabels: labels,
-            },
-            Template: corev1.PodTemplateSpec{
-                ObjectMeta: metav1.ObjectMeta{
-                    Labels: labels,
-                },
-                Spec: corev1.PodSpec{
-                    Containers: []corev1.Container{
-                        {
-                            Name:  "app",
-                            Image: image,
-                            Command: []string{"./main", "startProject"},
-                            Args:  []string{"--port=8080", authArg},
-                            Ports: []corev1.ContainerPort{
-                                {
-                                    ContainerPort: 8080,
-                                    Name:          "http",
-                                    Protocol:      "TCP",
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    }
+	envVars := []corev1.EnvVar{
+		{
+			Name:  "JWT_SECRET",
+			Value: myapp.Spec.JWTSecret,
+		},
+	}
+	klog.InfoS("Creating deployment with env vars", "namespace", myapp.Namespace, "name", myapp.Name, "env", envVars)
+
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      myapp.Name + "-deployment",
+			Namespace: myapp.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(myapp, v1alpha1.SchemeGroupVersion.WithKind("MyApp")),
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:            "app",
+							Image:           image,
+							ImagePullPolicy: corev1.PullAlways,
+							Command:         []string{"./main", "startProject"},
+							Args:            []string{"--port=8080", authArg},
+							Ports: []corev1.ContainerPort{
+								{
+									ContainerPort: 8080,
+									Name:          "http",
+									Protocol:      "TCP",
+								},
+							},
+							Env: envVars,
+						},
+					},
+				},
+			},
+		},
+	}
 }
