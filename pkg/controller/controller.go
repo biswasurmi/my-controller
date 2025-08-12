@@ -415,8 +415,13 @@ func newDeployment(myapp *v1alpha1.MyApp) *appsv1.Deployment {
 
 	envVars := []corev1.EnvVar{
 		{
-			Name:  "JWT_SECRET",
-			Value: myapp.Spec.JWTSecret,
+			Name: "JWT_SECRET",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: myapp.Spec.JWTSecret},  
+					Key: "jwt-key",  
+				},
+			},
 		},
 	}
 	klog.InfoS("Creating deployment with env vars", "namespace", myapp.Namespace, "name", myapp.Name, "env", envVars)
